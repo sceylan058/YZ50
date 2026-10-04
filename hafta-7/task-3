@@ -1,0 +1,62 @@
+from main import *
+
+torch.set_printoptions(precision=3, sci_mode=False)
+torch.manual_seed(1337)
+n_embd = 32
+head_size = 16
+
+token_embedding_table = nn.Embedding(vocab_size, n_embd)
+position_embedding_table = nn.Embedding(block_size, n_embd)
+key   = nn.Linear(n_embd, head_size, bias=False)
+query = nn.Linear(n_embd, head_size, bias=False)
+value = nn.Linear(n_embd, head_size, bias=False)
+
+# single head on a real batch
+xb, yb = get_batch('train')
+xb = xb.cpu()
+B, T = xb.shape
+
+tok_emb = token_embedding_table(xb)                  # (B,T,C)
+pos_emb = position_embedding_table(torch.arange(T))  # (T,C)
+x = tok_emb + pos_emb                                # (B,T,C)
+
+k = key(x)                                           # (B,T,hs)
+q = query(x)                                         # (B,T,hs)
+wei = q @ k.transpose(-2, -1) * head_size**-0.5      # (B,T,T) 
+tril = torch.tril(torch.ones(T, T))                  #görev 2 
+wei = wei.masked_fill(tril == 0, float('-inf'))
+wei = F.softmax(wei, dim=-1)
+v = value(x)                                         # (B,T,hs).    
+out = wei @ v                                        # (B,T,hs)
+
+print("k:", k.shape, "q:", q.shape, "wei:", wei.shape, "out:", out.shape)
+print("wei[0]:\n", wei[0])
+
+
+
+sample = xb[0].tolist()
+row = T - 1
+print("\ntext:", repr(decode(sample)))
+print(f"token {row} ({repr(itos[sample[row]])}) attends to:")
+for j in range(T):
+    print(f"  {j} {repr(itos[sample[j]])}: {wei[0, row, j].item():.3f}")
+print("row sum:", wei[0, row].sum().item())
+
+
+
+k = torch.randn(B, T, head_size)
+q = torch.randn(B, T, head_size)
+wei_raw = q @ k.transpose(-2, -1)
+wei_scaled = wei_raw * head_size**-0.5
+
+print(f"\nvar k: {k.var().item():.3f}, var q: {q.var().item():.3f}")
+print(f"var wei (unscaled): {wei_raw.var().item():.3f}")
+print(f"var wei (scaled):   {wei_scaled.var().item():.3f}")
+
+p_raw = F.softmax(wei_raw.masked_fill(tril == 0, float('-inf')), dim=-1)
+p_scaled = F.softmax(wei_scaled.masked_fill(tril == 0, float('-inf')), dim=-1)
+print("\nlast row, unscaled:", p_raw[0, -1])
+print("last row, scaled:  ", p_scaled[0, -1])
+print(f"mean max weight -> unscaled: {p_raw[:, -1].max(-1).values.mean():.3f}, "
+      f"scaled: {p_scaled[:, -1].max(-1).values.mean():.3f}")
+

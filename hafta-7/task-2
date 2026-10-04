@@ -1,0 +1,50 @@
+import torch
+from torch.nn import functional as F
+
+
+torch.manual_seed(42)
+a = torch.tril(torch.ones(3, 3))
+a = a / a.sum(1, keepdim=True)
+b = torch.randint(0, 10, (3, 2)).float()
+c = a @ b
+print("a (weights):\n", a)
+print("b (data):\n", b)
+print("c = a @ b (average of past):\n", c)
+
+
+torch.manual_seed(1337)
+B, T, C = 4, 8, 2
+x = torch.randn(B, T, C)
+
+
+
+#for loop
+xbow = torch.zeros((B, T, C))
+for b in range(B):
+    for t in range(T):
+        xprev = x[b, :t+1]                 
+        xbow[b, t] = torch.mean(xprev, 0)
+        
+        
+        
+        
+        
+
+#matrix product with lower triangular matrx
+wei = torch.tril(torch.ones(T, T))
+print(wei)
+wei = wei / wei.sum(1, keepdim=True)
+xbow2 = wei @ x                             
+
+
+
+
+#softmax
+tril = torch.tril(torch.ones(T, T))
+wei3 = torch.zeros((T, T))
+wei3 = wei3.masked_fill(tril == 0, float('-inf'))
+wei3 = F.softmax(wei3, dim=-1)
+xbow3 = wei3 @ x
+
+
+print("\n", wei)

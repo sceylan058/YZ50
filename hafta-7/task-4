@@ -1,0 +1,105 @@
+from main import *
+
+torch.manual_seed(1337)
+n_embd = 32
+learning_rate = 1e-3
+max_iters = 5000
+eval_interval = 500
+
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key   = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)                                              # (B,T,hs)
+        q = self.query(x)                                            # (B,T,hs)
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5            # (B,T,T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        self.wei = wei.detach()                                      # saved for inspection
+        v = self.value(x)                                            # (B,T,hs)
+        return wei @ v                                               # (B,T,hs)
+
+class HeadLanguageModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.sa_head = Head(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        tok_emb = self.token_embedding_table(idx)                                    # (B,T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=idx.device))  # (T,C)
+        x = tok_emb + pos_emb                                                        # (B,T,C)
+        x = self.sa_head(x)                                                          # (B,T,C)
+        logits = self.lm_head(x)                                                     # (B,T,vocab)
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            loss = F.cross_entropy(logits.view(B*T, C), targets.view(B*T))
+        return logits, loss
+
+    def generate(self, idx, max_new_tokens):
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -block_size:]                  # crop to last block_size tokens
+            logits, loss = self(idx_cond)
+            probs = F.softmax(logits[:, -1, :], dim=-1)      # (B,C)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+        return idx
+
+# train
+model = HeadLanguageModel().to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+for it in range(max_iters):
+    if it % eval_interval == 0 or it == max_iters - 1:
+        losses = estimate_loss(model)
+        print(f"step {it}: train {losses['train']:.4f}, val {losses['val']:.4f}")
+    xb, yb = get_batch('train')
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+# compare with bigram
+head_val = estimate_loss(model)['val']
+
+bigram_val = 2.489612102508545
+
+print(f"\nbigram val:      {bigram_val:.4f}")
+print(f"single head val: {head_val:.4f}")
+print(f"improvement:     {bigram_val - head_val:.4f}")
+
+# sample
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print("\n" + decode(model.generate(context, max_new_tokens=300)[0].tolist()))
+
+# inspect attention on the trained model
+torch.set_printoptions(precision=3, sci_mode=False)
+prompt = "To be or"                                  # 8 chars = block_size
+idx = torch.tensor([encode(prompt)], device=device)
+model.eval()
+with torch.no_grad():
+    model(idx)
+w = model.sa_head.wei[0]
+print("\nwei:\n", w)
+print(f"{repr(prompt[-1])} attends to:")
+for j, ch in enumerate(prompt):
+    print(f"  {j} {repr(ch)}: {w[-1, j].item():.3f}")
+
+# why crop to block_size
+if device == 'cpu':
+    long_idx = torch.zeros((1, block_size + 1), dtype=torch.long)
+    try:
+        model(long_idx)
+    except Exception as e:
+        print("\nwithout cropping:", type(e).__name__, "-", e)
